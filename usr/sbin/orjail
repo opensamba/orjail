@@ -9,7 +9,7 @@ REALPATH=$(realpath "$0")
 REALPATH=$(dirname "$REALPATH")
 DEFAULTNAME=orjail
 NAME=$DEFAULTNAME
-USERNAME=${SUDO_USER:-$(whoami)}
+USERNAME=$(whoami)
 USEFIREJAIL=n
 FIREJAILARGS=
 VERBOSE=
@@ -112,24 +112,24 @@ cleanup() {
     eno rm -fr /tmp/orjail-"$NAME"
 
     print G " * Remove in-$NAME network interface"
-    eno ip link del in-"$NAME"
+    eno $SUDOBIN ip link del in-"$NAME"
 
     print G " * Delete network namespace $NAME"
-    eno ip netns delete "$NAME"
+    eno $SUDOBIN ip netns delete "$NAME"
 
     print G " * Cleaning up iptables rules..."
-    eno iptables -t nat -D  PREROUTING -i in-"$NAME" -p udp -d "$IPHOST" --dport 53 -j DNAT \
+    eno $SUDOBIN iptables -t nat -D  PREROUTING -i in-"$NAME" -p udp -d "$IPHOST" --dport 53 -j DNAT \
                  --to-destination "$IPHOST":"$DNSPORT"
-    eno iptables -t nat -D  PREROUTING -i in-"$NAME" -p tcp --syn -j DNAT \
+    eno $SUDOBIN iptables -t nat -D  PREROUTING -i in-"$NAME" -p tcp --syn -j DNAT \
                  --to-destination $IPHOST:"$TRANSPORT"
-    eno iptables -D OUTPUT -o in-"$NAME" -m state --state ESTABLISHED,RELATED -j ACCEPT
-    eno iptables -D INPUT -i in-"$NAME" -j DROP
+    eno $SUDOBIN iptables -D OUTPUT -o in-"$NAME" -m state --state ESTABLISHED,RELATED -j ACCEPT
+    eno $SUDOBIN iptables -D INPUT -i in-"$NAME" -j DROP
     if [[ $HIDDENSERVICE = y ]]; then
-      eno iptables -D INPUT -i in-"$NAME" -p tcp --destination "$IPNETNS" --dport "$HSERVICEPORT" -j ACCEPT
-      eno iptables -D INPUT -i in-"$NAME" -p tcp --source "$IPNETNS" --sport "$HSERVICEPORT" -j ACCEPT
+      eno $SUDOBIN iptables -D INPUT -i in-"$NAME" -p tcp --destination "$IPNETNS" --dport "$HSERVICEPORT" -j ACCEPT
+      eno $SUDOBIN iptables -D INPUT -i in-"$NAME" -p tcp --source "$IPNETNS" --sport "$HSERVICEPORT" -j ACCEPT
     fi
-    eno iptables -D INPUT -i in-"$NAME" -p udp --destination $IPHOST --dport "$DNSPORT" -j ACCEPT
-    eno iptables -D INPUT -i in-"$NAME" -p tcp --destination $IPHOST --dport "$TRANSPORT" -j ACCEPT
+    eno $SUDOBIN iptables -D INPUT -i in-"$NAME" -p udp --destination $IPHOST --dport "$DNSPORT" -j ACCEPT
+    eno $SUDOBIN iptables -D INPUT -i in-"$NAME" -p tcp --destination $IPHOST --dport "$TRANSPORT" -j ACCEPT
   fi
 
   print G " * Remove the temporary resolve file $RESOLVEFILE..."
@@ -202,11 +202,10 @@ if [ "$1" = "--inside" ]; then
   shift
 
   print G " * Replacing resolv.conf..."
-  mount --bind -o users "$RESOLVEFILE" /etc/resolv.conf || \
+  $SUDOBIN mount --bind -o users "$RESOLVEFILE" /etc/resolv.conf || \
     error "Failed to mount /etc/resolv.conf."
 
   print G " * Executing..."
-
   if [ "$SUDOBIN" ]; then
     $SUDOBIN -u "$USERNAME" "$@"
   else
@@ -387,10 +386,10 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-if [[ $EUID -ne 0 ]]; then
-   printv R "$DEFAULTNAME must be run as root."
-   exit 1
-fi
+# if [[ $EUID -ne 0 ]]; then
+#    printv R "$DEFAULTNAME must be run as root."
+#    exit 1
+# fi
 
 TORBIN=$(command -v tor)
 if ! [ -x "$TORBIN" ]; then
@@ -421,12 +420,13 @@ if [ $USEFIREJAIL = y ]; then
 fi
 
 err=0
-for cmd in ip iptables $FIREJAILBIN ${SUDOBIN:-su}; do
-  if ! [ -x "$(command -v "$cmd")" ]; then
-    printv R "Cannot locate $cmd executable"
-    err=1
-  fi
-done
+# TODO: commenting this because without sudo, user environment does not contain */sbin
+# for cmd in ip iptables $FIREJAILBIN ${SUDOBIN:-su}; do
+#   if ! [ -x "$(command -v "$cmd")" ]; then
+#     printv R "Cannot locate $cmd executable"
+#     err=1
+#   fi
+# done
 ! [ 0 = $err ] && exit $err
 
 # check if network namespace already exists
@@ -446,60 +446,60 @@ if ! ip netns list | eno grep -e \\b"$NAME"\\b; then
 
   print G " * Creating a $NAME namespace..."
   # add network namespace
-  ip netns add "$NAME" || die "Failed to add a new namespace"
+  $SUDOBIN ip netns add "$NAME" || die "Failed to add a new namespace"
 
   # Create veth link.
   print G " * Creating a veth link..."
-  ip link add in-"$NAME" type veth peer name out-"$NAME" || \
+  $SUDOBIN ip link add in-"$NAME" type veth peer name out-"$NAME" || \
     die "Failed to add a veth interface"
 
   # Add out to NS.
   print G " * Sharing the veth interface..."
-  ip link set out-"$NAME" netns "$NAME" || \
+  $SUDOBIN ip link set out-"$NAME" netns "$NAME" || \
     die "Failed to assign veth interface to the namespace"
 
   ## setup ip address of host interface
   print G " * Setting up IP address of host interface..."
-  ip addr add "$IPHOST"/"$NETMASK" dev in-"$NAME" || \
+  $SUDOBIN ip addr add "$IPHOST"/"$NETMASK" dev in-"$NAME" || \
     die "Failed to assign veth interface to the host"
-  ip link set in-"$NAME" up || die "Failed to set up the veth interface"
+  $SUDOBIN ip link set in-"$NAME" up || die "Failed to set up the veth interface"
 
   # setup ip address of peer
   print G " * Setting up IP address of peer interface..."
-  ip netns exec "$NAME" ip addr add "$IPNETNS"/"$NETMASK" dev out-"$NAME" || \
+  $SUDOBIN ip netns exec "$NAME" ip addr add "$IPNETNS"/"$NETMASK" dev out-"$NAME" || \
     die "Failed to assign an IP to the veth interface"
-  ip netns exec "$NAME" ip link set out-"$NAME" up || \
+  $SUDOBIN ip netns exec "$NAME" ip link set out-"$NAME" up || \
     die "Failed to assign an IP to the veth interface"
 
   # default route
   print G " * Default routing up..."
-  ip netns exec "$NAME" ip route add default via "$IPHOST" || \
+  $SUDOBIN ip netns exec "$NAME" ip route add default via "$IPHOST" || \
     die "Failed to set up the network routing"
 
   # resolve with tor
   print G " * Resolving via Tor"
-  iptables -t nat -A  PREROUTING -i in-"$NAME" -p udp -d "$IPHOST" --dport 53 -j DNAT \
+  $SUDOBIN iptables -t nat -A  PREROUTING -i in-"$NAME" -p udp -d "$IPHOST" --dport 53 -j DNAT \
         --to-destination "$IPHOST":"$DNSPORT" || \
     die "Failed to configure iptable for routing the Tor DNS lookup"
 
   # traffic througth tor
   print G " * Traffic via Tor..."
-  iptables -t nat -A  PREROUTING -i in-"$NAME" -p tcp --syn -j DNAT \
+  $SUDOBIN iptables -t nat -A  PREROUTING -i in-"$NAME" -p tcp --syn -j DNAT \
            --to-destination "$IPHOST":"$TRANSPORT" || \
     die "Failed to configure iptable for routing the network traffic"
-  iptables -A OUTPUT -m state -o in-"$NAME" --state ESTABLISHED,RELATED -j ACCEPT || \
+  $SUDOBIN iptables -A OUTPUT -m state -o in-"$NAME" --state ESTABLISHED,RELATED -j ACCEPT || \
     die "Failed to configure the iptable for accepting connection"
 
   # REJECT all traffic coming from orjail
   # this is needed to avoid reaching other interfaces
-  iptables -I INPUT -i in-"$NAME" -p udp --destination "$IPHOST" --dport "$DNSPORT" -j ACCEPT &&
-  iptables -I INPUT -i in-"$NAME" -p tcp --destination "$IPHOST" --dport "$TRANSPORT" -j ACCEPT &&
+  $SUDOBIN iptables -I INPUT -i in-"$NAME" -p udp --destination "$IPHOST" --dport "$DNSPORT" -j ACCEPT &&
+  $SUDOBIN iptables -I INPUT -i in-"$NAME" -p tcp --destination "$IPHOST" --dport "$TRANSPORT" -j ACCEPT &&
   if [[ $HIDDENSERVICE = y ]]; then
-    iptables -I INPUT -i in-"$NAME" -p tcp --source "$IPNETNS" --sport "$HSERVICEPORT" -j ACCEPT &&
-    iptables -I INPUT -i in-"$NAME" -p tcp --destination "$IPNETNS" --dport "$HSERVICEPORT" -j ACCEPT
+    $SUDOBIN iptables -I INPUT -i in-"$NAME" -p tcp --source "$IPNETNS" --sport "$HSERVICEPORT" -j ACCEPT &&
+    $SUDOBIN iptables -I INPUT -i in-"$NAME" -p tcp --destination "$IPNETNS" --dport "$HSERVICEPORT" -j ACCEPT
   fi
   # while we inserted the rules above, the DROP rule must be appended instead
-  iptables -A INPUT -i in-"$NAME" -j DROP || \
+  $SUDOBIN iptables -A INPUT -i in-"$NAME" -j DROP || \
     die "Failed to configure iptables for rejecting traffic from orjail"
 
   # executing tor
@@ -510,7 +510,7 @@ if ! ip netns list | eno grep -e \\b"$NAME"\\b; then
   print G " * Tor version is $TORVERSION"
 
   TORCONFIGFILE=$(mktemp /tmp/torXXXXXX)
-  chown "$USERNAME" "$TORCONFIGFILE" || \
+  $SUDOBIN chown "$USERNAME" "$TORCONFIGFILE" || \
     die "Failed to change owner of the Tor configuration file $TORCONFIGFILE"
 
   echo "DataDirectory /tmp/orjail-$NAME"        > "$TORCONFIGFILE" &&
@@ -546,7 +546,7 @@ if ! ip netns list | eno grep -e \\b"$NAME"\\b; then
 
   # executing tor
   print G " * Executing Tor..."
-  $TORBIN --quiet -f "$TORCONFIGFILE" &> /dev/null &
+  $SUDOBIN $TORBIN --quiet -f "$TORCONFIGFILE" &> /dev/null &
 else
   print Y "$NAME network namespace already exists!"
   KEEP=y
@@ -567,7 +567,7 @@ if [ $USEFIREJAIL = y ]; then
     su "$USERNAME" -c "$FIREJAILBIN ${FIREJAILARGS[*]} --dns=$IPHOST --netns=$NAME $*"
   fi
 else #or without
-  ip netns exec "$NAME" \
+  $SUDOBIN ip netns exec "$NAME" \
     unshare --ipc --fork --pid --mount --mount-proc \
     "$0" --inside "$USERNAME" "$RESOLVEFILE" "$VERBOSE" "$@"
 fi
